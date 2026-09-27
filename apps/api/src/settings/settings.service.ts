@@ -10,7 +10,8 @@ export const SETTING_DEFAULTS = {
   transcode_policy: 'when_needed' as 'when_needed' | 'always' | 'never',
   media_retention_days: 3,
   media_orphan_days: 2,
-  max_upload_bytes: 4 * 1024 ** 3,
+  // 45 MB: Supabase Storage's free plan hard-caps every stored file at 50 MB, so leave headroom.
+  max_upload_bytes: 45 * 1024 ** 2,
   upload_part_size_bytes: 10 * 1024 ** 2,
   publish_max_attempts: 6,
   analytics_account_sync: '0 */4 * * *',

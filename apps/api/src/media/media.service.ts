@@ -1,4 +1,4 @@
-import { HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import type { MediaResponse, StartUploadRequest, StartUploadResponse, UploadPartUrl } from '@sp/contracts';
 import { randomUUID } from 'node:crypto';
 import { extname } from 'node:path';
@@ -36,6 +36,8 @@ export function toMediaResponse(media: Media): MediaResponse {
 
 @Injectable()
 export class MediaService {
+  private readonly logger = new Logger(MediaService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
@@ -48,7 +50,8 @@ export class MediaService {
     await this.assertCanPublishSomewhere(userId);
     const maxBytes = await this.settings.get('max_upload_bytes');
     if (input.sizeBytes > maxBytes) {
-      throw new AppError('UPLOAD_TOO_LARGE', `Videos can be at most ${Math.round(maxBytes / 1024 ** 3)} GB.`, HttpStatus.PAYLOAD_TOO_LARGE);
+      const limit = maxBytes >= 1024 ** 3 ? `${Math.round(maxBytes / 1024 ** 3)} GB` : `${Math.round(maxBytes / MiB)} MB`;
+      throw new AppError('UPLOAD_TOO_LARGE', `Videos can be at most ${limit}.`, HttpStatus.PAYLOAD_TOO_LARGE);
     }
 
     let partSize = await this.settings.get('upload_part_size_bytes');
@@ -122,14 +125,45 @@ export class MediaService {
 
   async remove(userId: string, mediaId: string): Promise<void> {
     const media = await this.owned(userId, mediaId);
-    const active = await this.prisma.publication.count({
-      where: { post: { mediaId }, status: { notIn: ['PUBLISHED', 'FAILED_FINAL', 'CANCELLED'] } },
+    await this.deleteIfNotActive(media, { throwIfActive: true });
+  }
+
+  /**
+   * Auto-cleanup: called once every publication for a post has reached a terminal status (PUBLISHED,
+   * FAILED_FINAL or CANCELLED) across every platform it targeted, i.e. nothing more will ever be retried
+   * for it. Re-checks that no publication tied to the media is still active before deleting, and is
+   * idempotent — a media row that's already DELETED is skipped silently. Shares the delete logic in
+   * `deleteIfNotActive` with the manual `remove()` endpoint above; only the "still active" handling differs
+   * (that one throws for the user, this one just skips since nothing should be active by the time it runs).
+   */
+  async cleanupCompletedPost(mediaId: string, postId: string): Promise<void> {
+    const media = await this.prisma.media.findUnique({ where: { id: mediaId } });
+    if (!media || media.status === 'DELETED') return;
+    // Keep the video while any post using it could still be retried (FAILED_FINAL); the daily cleanup cron
+    // removes those after media_retention_days.
+    const stillNeeded = await this.prisma.publication.count({
+      where: { post: { mediaId }, status: { notIn: ['PUBLISHED', 'CANCELLED'] } },
     });
-    if (active > 0) throw actionNotAllowed('This video is still being published.');
+    if (stillNeeded > 0) return;
+    const deleted = await this.deleteIfNotActive(media, { throwIfActive: false });
+    if (deleted) this.logger.log(`Auto-deleted media ${mediaId} for post ${postId}: every destination has finished (published or permanently failed/cancelled)`);
+  }
+
+  /** Returns whether it actually deleted (false if already DELETED, or skipped because a publication is still active and `throwIfActive` is false). */
+  private async deleteIfNotActive(media: Media, opts: { throwIfActive: boolean }): Promise<boolean> {
+    if (media.status === 'DELETED') return false;
+    const active = await this.prisma.publication.count({
+      where: { post: { mediaId: media.id }, status: { notIn: ['PUBLISHED', 'FAILED_FINAL', 'CANCELLED'] } },
+    });
+    if (active > 0) {
+      if (opts.throwIfActive) throw actionNotAllowed('This video is still being published.');
+      return false;
+    }
     if (media.multipartUploadId) await this.storage.abortMultipartUpload(media.storageKey, media.multipartUploadId);
-    const variants = await this.prisma.mediaVariant.findMany({ where: { mediaId } });
+    const variants = await this.prisma.mediaVariant.findMany({ where: { mediaId: media.id } });
     await this.storage.deleteObjects([media.storageKey, ...variants.map((v) => v.storageKey)]).catch(() => undefined);
-    await this.prisma.media.update({ where: { id: mediaId }, data: { status: 'DELETED', deletedAt: new Date(), multipartUploadId: null } });
+    await this.prisma.media.update({ where: { id: media.id }, data: { status: 'DELETED', deletedAt: new Date(), multipartUploadId: null } });
+    return true;
   }
 
   private async owned(userId: string, mediaId: string): Promise<Media> {

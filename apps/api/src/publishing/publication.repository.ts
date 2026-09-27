@@ -38,6 +38,12 @@ export type PublicationPatch = Omit<Prisma.PublicationUpdateManyMutationInput, '
 export interface TransitionEvents {
   postBecameTerminal?: { postId: string; userId: string; status: PostStatus };
   needsAction?: boolean;
+  /**
+   * Every publication for this post is PUBLISHED or CANCELLED, so its video will never be needed again.
+   * FAILED_FINAL is deliberately excluded: the user can still press Retry, which needs the video. Those are
+   * left for the daily media cleanup cron, which deletes terminal media after `media_retention_days`.
+   */
+  mediaCleanup?: { mediaId: string; postId: string };
 }
 
 @Injectable()
@@ -79,8 +85,9 @@ export class PublicationRepository {
       }
       const updated = await tx.publication.findUniqueOrThrow({ where: { id: pub.id }, include: publicationInclude });
       const events: TransitionEvents = { needsAction: to === 'NEEDS_USER_ACTION' && pub.status !== 'NEEDS_USER_ACTION' };
-      const terminal = await this.recomputePost(tx, pub.postId);
-      if (terminal) events.postBecameTerminal = terminal;
+      const rollup = await this.recomputePost(tx, pub.postId);
+      if (rollup.postBecameTerminal) events.postBecameTerminal = rollup.postBecameTerminal;
+      if (rollup.mediaCleanup) events.mediaCleanup = rollup.mediaCleanup;
       return { pub: updated, events };
     });
   }
@@ -97,16 +104,28 @@ export class PublicationRepository {
     return this.prisma.publication.findUniqueOrThrow({ where: { id: pub.id }, include: publicationInclude });
   }
 
-  /** Updates the post status; returns details when the post just reached a terminal status for the first time. */
-  async recomputePost(tx: PrismaTx, postId: string): Promise<TransitionEvents['postBecameTerminal'] | null> {
+  /**
+   * Updates the post status; returns details when the post just reached a terminal status for the first time
+   * (for user notification), and separately whenever every publication for the post is now terminal (for media
+   * cleanup — this can be true even when the post itself rolled up to CANCELLED, which is excluded from
+   * notification but still means nothing further will ever run for this post).
+   */
+  async recomputePost(
+    tx: PrismaTx,
+    postId: string,
+  ): Promise<{ postBecameTerminal: TransitionEvents['postBecameTerminal'] | null; mediaCleanup: TransitionEvents['mediaCleanup'] | null }> {
     const post = await tx.post.findUniqueOrThrow({ where: { id: postId }, include: { publications: { select: { status: true } } } });
     const status = rollupPostStatus(post.publications.map((p) => p.status));
     const allTerminal = post.publications.every((p) => isTerminal(p.status));
+    const videoNoLongerNeeded = post.publications.every((p) => p.status === 'PUBLISHED' || p.status === 'CANCELLED');
     const firstTerminal = allTerminal && !post.notifiedAt && status !== 'CANCELLED';
     if (status !== post.status || firstTerminal) {
       await tx.post.update({ where: { id: postId }, data: { status, ...(firstTerminal ? { notifiedAt: new Date() } : {}) } });
     }
-    return firstTerminal ? { postId, userId: post.userId, status } : null;
+    return {
+      postBecameTerminal: firstTerminal ? { postId, userId: post.userId, status } : null,
+      mediaCleanup: videoNoLongerNeeded ? { mediaId: post.mediaId, postId } : null,
+    };
   }
 }
 

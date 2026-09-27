@@ -1,5 +1,5 @@
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
-import type { CreatePostRequest, PostListResponse, PostView, ResolvePublicationRequest } from '@sp/contracts';
+import type { CreatePostRequest, PostListResponse, PostView, PublicationStatus, ResolvePublicationRequest } from '@sp/contracts';
 import { createHash } from 'node:crypto';
 import { AuditService } from '../audit/audit.service';
 import { actionNotAllowed, AppError, notFound } from '../common/errors';
@@ -8,12 +8,13 @@ import { toJsonValue } from '../common/time';
 import { AppConfig } from '../config/app-config';
 import { EntitlementsService } from '../entitlements/entitlements.service';
 import type { Prisma } from '../generated/prisma/client';
+import { MediaService } from '../media/media.service';
 import { MediaProcessingService } from '../media-processing/media-processing.service';
 import { decideMediaUse, MediaRules, ProbeResult, ValidationIssue, validateMedia } from '../media-processing/rules';
 import { PrismaService } from '../prisma/prisma.service';
 import { AdapterRegistry } from '../publishing/adapter-registry';
 import { PublicationRunner } from '../publishing/publication-runner.service';
-import { PublicationRepository, publicationInclude, RunnerCheckpoint } from '../publishing/publication.repository';
+import { PublicationRepository, publicationInclude, RunnerCheckpoint, TransitionEvents } from '../publishing/publication.repository';
 import { PublishingEvents } from '../publishing/publishing-events.service';
 import { SettingsService } from '../settings/settings.service';
 import { postViewInclude, toPostView } from './post-view';
@@ -22,6 +23,12 @@ interface PublishConfig {
   limits: { titleRequired: boolean; titleMaxChars?: number; captionMaxChars: number };
   mediaRules: MediaRules;
 }
+
+/** Publication statuses where the publication hasn't finished yet (no PUBLISHED/FAILED_FINAL/CANCELLED outcome). */
+const ACTIVE_PUBLICATION_STATUSES: PublicationStatus[] = ['PENDING_MEDIA', 'QUEUED', 'RETRY_SCHEDULED', 'PAUSED', 'NEEDS_USER_ACTION'];
+
+/** Max posts a user may have "in flight" (at least one publication not yet finished) at once. */
+const MAX_ACTIVE_POSTS = 15;
 
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
@@ -50,6 +57,7 @@ export class PostsService {
     private readonly mediaProcessing: MediaProcessingService,
     private readonly audit: AuditService,
     private readonly config: AppConfig,
+    private readonly media: MediaService,
   ) {}
 
   async create(userId: string, idempotencyKey: string | undefined, body: CreatePostRequest, meta: RequestMeta): Promise<{ created: boolean; post: PostView }> {
@@ -63,6 +71,13 @@ export class PostsService {
         throw new AppError('IDEMPOTENCY_KEY_REUSED', 'This request key was already used for a different post.', HttpStatus.CONFLICT);
       }
       return { created: false, post: toPostView(existing) };
+    }
+
+    const activePostCount = await this.prisma.post.count({
+      where: { userId, publications: { some: { status: { in: ACTIVE_PUBLICATION_STATUSES } } } },
+    });
+    if (activePostCount >= MAX_ACTIVE_POSTS) {
+      throw actionNotAllowed('You already have 15 posts in progress. Wait for one to finish or cancel one before creating another.');
     }
 
     const media = await this.prisma.media.findFirst({ where: { id: body.mediaId, userId } });
@@ -209,19 +224,19 @@ export class PostsService {
       providerErrorCode: null,
     });
     await this.audit.record({ actorUserId: userId, action: 'publication.retry', entityType: 'publication', entityId: pub.id, oldValue: { status: pub.status, errorCode: pub.errorCode }, meta });
-    if (events.postBecameTerminal) await this.events.postCompleted(events.postBecameTerminal.postId);
+    await this.dispatchTransitionEvents(events);
     await this.runner.enqueueRun(updated.platform.code, updated.id);
     return this.get(userId, pub.postId);
   }
 
   async cancel(userId: string, publicationId: string, meta: RequestMeta): Promise<PostView> {
     const pub = await this.ownedPublication(userId, publicationId);
-    if (!['PENDING_MEDIA', 'QUEUED', 'RETRY_SCHEDULED', 'PAUSED', 'NEEDS_USER_ACTION'].includes(pub.status)) {
+    if (!ACTIVE_PUBLICATION_STATUSES.includes(pub.status)) {
       throw actionNotAllowed('This publication can no longer be cancelled.');
     }
     const { events } = await this.repo.transition(pub, 'CANCELLED', { nextAttemptAt: null });
     await this.audit.record({ actorUserId: userId, action: 'publication.cancel', entityType: 'publication', entityId: pub.id, oldValue: { status: pub.status }, meta });
-    if (events.postBecameTerminal) await this.events.postCompleted(events.postBecameTerminal.postId);
+    await this.dispatchTransitionEvents(events);
     return this.get(userId, pub.postId);
   }
 
@@ -229,7 +244,7 @@ export class PostsService {
     const post = await this.prisma.post.findFirst({ where: { id: postId, userId }, include: { publications: true } });
     if (!post) throw notFound('Post');
     for (const p of post.publications) {
-      if (['PENDING_MEDIA', 'QUEUED', 'RETRY_SCHEDULED', 'PAUSED', 'NEEDS_USER_ACTION'].includes(p.status)) {
+      if (ACTIVE_PUBLICATION_STATUSES.includes(p.status)) {
         await this.cancel(userId, p.id, meta);
       }
     }
@@ -254,7 +269,7 @@ export class PostsService {
         errorMessage: null,
         checkpoint: { ...checkpoint, inFlight: null, hadUnknownOutcome: false },
       });
-      if (events.postBecameTerminal) await this.events.postCompleted(events.postBecameTerminal.postId);
+      await this.dispatchTransitionEvents(events);
     } else {
       await this.entitlements.assert(userId, `${pub.platform.code}.publish`);
       const fresh: RunnerCheckpoint = { pollCount: 0 };
@@ -279,6 +294,12 @@ export class PostsService {
     if ((text.caption?.length ?? 0) > limits.captionMaxChars) {
       throw new AppError('TEXT_LIMIT', `${platformName} captions can be at most ${limits.captionMaxChars} characters.`, HttpStatus.UNPROCESSABLE_ENTITY, { destination: index, field: 'caption' });
     }
+  }
+
+  /** Shared side-effect handling after `repo.transition()`, used by every user-driven transition here (the runner has its own equivalent). */
+  private async dispatchTransitionEvents(events: TransitionEvents): Promise<void> {
+    if (events.postBecameTerminal) await this.events.postCompleted(events.postBecameTerminal.postId);
+    if (events.mediaCleanup) await this.media.cleanupCompletedPost(events.mediaCleanup.mediaId, events.mediaCleanup.postId);
   }
 
   private async ownedPublication(userId: string, publicationId: string) {

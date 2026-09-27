@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { addMs } from '../common/time';
 import { JobQueueService, QUEUES } from '../jobs/job-queue.service';
 import { KillSwitchService } from '../kill-switches/kill-switch.service';
+import { MediaService } from '../media/media.service';
 import { PrismaService } from '../prisma/prisma.service';
 import type { ClassifiedError, SocialPublisher, StepResult } from '../publishers/types';
 import { SettingsService } from '../settings/settings.service';
@@ -54,6 +55,7 @@ export class PublicationRunner {
     private readonly settings: SettingsService,
     private readonly jobs: JobQueueService,
     private readonly events: PublishingEvents,
+    private readonly media: MediaService,
   ) {}
 
   async run(publicationId: string, jobId?: string): Promise<void> {
@@ -322,6 +324,7 @@ export class PublicationRunner {
   private async dispatch(pub: PublicationRow, events: TransitionEvents): Promise<void> {
     if (events.needsAction) await this.events.publicationNeedsAction(pub);
     if (events.postBecameTerminal) await this.events.postCompleted(events.postBecameTerminal.postId);
+    if (events.mediaCleanup) await this.media.cleanupCompletedPost(events.mediaCleanup.mediaId, events.mediaCleanup.postId);
   }
 
   private reload(pub: PublicationRow): Promise<PublicationRow> {
