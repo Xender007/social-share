@@ -1,0 +1,33 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# build output
+dist/
+apps/api/src/generated/
+build/
+.turbo/
+coverage/
+*.tsbuildinfo
+
+# env and secrets
+.env
+.env.*
+!.env.example
+
+# expo / react native
+.expo/
+expo-env.d.ts
+apps/mobile/android/
+apps/mobile/ios/
+*.apk
+*.aab
+
+# local data (dev database, local object storage)
+.data/
+
+# logs and os files
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db

@@ -1,0 +1,675 @@
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "cjs"
+  runtime      = "nodejs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─────────────────────────── Enums ───────────────────────────
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  DELETED
+}
+
+enum FeatureScope {
+  GLOBAL
+  PLATFORM
+}
+
+enum OverrideEffect {
+  ALLOW
+  DENY
+}
+
+enum ProviderKind {
+  GOOGLE
+  META
+}
+
+enum ConnectionStatus {
+  CONNECTED
+  REFRESH_FAILING
+  REAUTH_REQUIRED
+  DISCONNECTED
+}
+
+enum SocialAccountStatus {
+  ACTIVE
+  INACTIVE
+  NOT_ELIGIBLE
+  REAUTH_REQUIRED
+  DISCONNECTED
+}
+
+enum MediaStatus {
+  PENDING_UPLOAD
+  UPLOADED
+  PROBING
+  READY
+  INVALID
+  DELETED
+}
+
+enum MediaVariantKind {
+  H264_SDR
+}
+
+enum VariantStatus {
+  PROCESSING
+  READY
+  FAILED
+}
+
+enum PostStatus {
+  SCHEDULED
+  PUBLISHING
+  PUBLISHED
+  PARTIALLY_PUBLISHED
+  NEEDS_ATTENTION
+  FAILED
+  CANCELLED
+}
+
+enum PublicationStatus {
+  PENDING_MEDIA
+  QUEUED
+  IN_PROGRESS
+  WAITING_PROVIDER
+  RETRY_SCHEDULED
+  UNKNOWN_OUTCOME
+  NEEDS_USER_ACTION
+  PAUSED
+  PUBLISHED
+  FAILED_FINAL
+  CANCELLED
+}
+
+enum ErrorCategory {
+  TRANSIENT
+  RATE_LIMITED
+  PROVIDER_LIMIT
+  UNKNOWN_OUTCOME
+  AUTH
+  MEDIA_INVALID
+  PERMISSION
+  VALIDATION
+  INTERNAL
+}
+
+enum AttemptOutcome {
+  ADVANCED
+  WAITING
+  SUCCEEDED
+  FAILED
+  ABANDONED
+}
+
+enum MetricEntity {
+  ACCOUNT
+  PUBLICATION
+}
+
+enum MetricGranularity {
+  SNAPSHOT
+  DAILY
+}
+
+enum MetricAggregation {
+  SUM
+  LATEST
+  AVERAGE
+}
+
+// ─────────────────────── Identity & Access ───────────────────────
+
+model AccessLevel {
+  id        String   @id @default(uuid()) @db.Uuid
+  code      String   @unique
+  name      String
+  priority  Int      @default(0)
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  users        User[]
+  capabilities AccessLevelCapability[]
+
+  @@map("access_levels")
+}
+
+model User {
+  id            String     @id @default(uuid()) @db.Uuid
+  email         String     @unique
+  passwordHash  String     @map("password_hash")
+  displayName   String?    @map("display_name")
+  accessLevelId String     @map("access_level_id") @db.Uuid
+  status        UserStatus @default(ACTIVE)
+  createdAt     DateTime   @default(now()) @map("created_at")
+  updatedAt     DateTime   @updatedAt @map("updated_at")
+
+  accessLevel      AccessLevel              @relation(fields: [accessLevelId], references: [id])
+  sessions         RefreshSession[]
+  devices          Device[]
+  overrides        UserCapabilityOverride[] @relation("OverrideSubject")
+  overridesCreated UserCapabilityOverride[] @relation("OverrideCreator")
+  killSwitches     KillSwitch[]
+  oauthStates      OAuthState[]
+  connections      ProviderConnection[]
+  socialAccounts   SocialAccount[]
+  media            Media[]
+  posts            Post[]
+  auditLogs        AuditLog[]
+
+  @@map("users")
+}
+
+model RefreshSession {
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String    @map("user_id") @db.Uuid
+  familyId   String    @map("family_id") @db.Uuid
+  tokenHash  String    @unique @map("token_hash")
+  deviceName String?   @map("device_name")
+  expiresAt  DateTime  @map("expires_at")
+  usedAt     DateTime? @map("used_at")
+  revokedAt  DateTime? @map("revoked_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([familyId])
+  @@map("refresh_sessions")
+}
+
+model Device {
+  id            String   @id @default(uuid()) @db.Uuid
+  userId        String   @map("user_id") @db.Uuid
+  expoPushToken String   @unique @map("expo_push_token")
+  platform      String   @default("android")
+  appVersion    String?  @map("app_version")
+  lastSeenAt    DateTime @default(now()) @map("last_seen_at")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("devices")
+}
+
+// ───────────────────── Catalog & Entitlements ─────────────────────
+
+model Platform {
+  id        String       @id @default(uuid()) @db.Uuid
+  code      String       @unique
+  name      String
+  provider  ProviderKind
+  enabled   Boolean      @default(false)
+  sortOrder Int          @default(0) @map("sort_order")
+  /// display metadata, apiVersion override, publish limits, option schemas
+  config    Json         @default("{}")
+  createdAt DateTime     @default(now()) @map("created_at")
+  updatedAt DateTime     @updatedAt @map("updated_at")
+
+  features           PlatformFeature[]
+  accessCapabilities AccessLevelCapability[]
+  overrides          UserCapabilityOverride[]
+  killSwitches       KillSwitch[]
+  socialAccounts     SocialAccount[]
+  publications       Publication[]
+  metricDefinitions  MetricDefinition[]
+
+  @@map("platforms")
+}
+
+model Feature {
+  id          String       @id @default(uuid()) @db.Uuid
+  code        String       @unique
+  name        String
+  description String?
+  scope       FeatureScope
+  enabled     Boolean      @default(false)
+  createdAt   DateTime     @default(now()) @map("created_at")
+  updatedAt   DateTime     @updatedAt @map("updated_at")
+
+  platforms          PlatformFeature[]
+  accessCapabilities AccessLevelCapability[]
+  overrides          UserCapabilityOverride[]
+  killSwitches       KillSwitch[]
+
+  @@map("features")
+}
+
+model PlatformFeature {
+  id         String   @id @default(uuid()) @db.Uuid
+  platformId String   @map("platform_id") @db.Uuid
+  featureId  String   @map("feature_id") @db.Uuid
+  enabled    Boolean  @default(false)
+  config     Json     @default("{}")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  platform Platform @relation(fields: [platformId], references: [id], onDelete: Cascade)
+  feature  Feature  @relation(fields: [featureId], references: [id], onDelete: Cascade)
+
+  @@unique([platformId, featureId])
+  @@map("platform_features")
+}
+
+model AccessLevelCapability {
+  id            String  @id @default(uuid()) @db.Uuid
+  accessLevelId String  @map("access_level_id") @db.Uuid
+  /// null = applies to every platform for this feature
+  platformId    String? @map("platform_id") @db.Uuid
+  featureId     String  @map("feature_id") @db.Uuid
+  allowed       Boolean
+
+  accessLevel AccessLevel @relation(fields: [accessLevelId], references: [id], onDelete: Cascade)
+  platform    Platform?   @relation(fields: [platformId], references: [id], onDelete: Cascade)
+  feature     Feature     @relation(fields: [featureId], references: [id], onDelete: Cascade)
+
+  // uniqueness in raw SQL: UNIQUE NULLS NOT DISTINCT (access_level_id, platform_id, feature_id)
+  @@index([accessLevelId])
+  @@map("access_level_capabilities")
+}
+
+model UserCapabilityOverride {
+  id          String         @id @default(uuid()) @db.Uuid
+  userId      String         @map("user_id") @db.Uuid
+  platformId  String?        @map("platform_id") @db.Uuid
+  featureId   String         @map("feature_id") @db.Uuid
+  effect      OverrideEffect
+  reason      String
+  expiresAt   DateTime?      @map("expires_at")
+  createdById String?        @map("created_by_id") @db.Uuid
+  createdAt   DateTime       @default(now()) @map("created_at")
+
+  user      User      @relation("OverrideSubject", fields: [userId], references: [id], onDelete: Cascade)
+  createdBy User?     @relation("OverrideCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  platform  Platform? @relation(fields: [platformId], references: [id], onDelete: Cascade)
+  feature   Feature   @relation(fields: [featureId], references: [id], onDelete: Cascade)
+
+  // uniqueness in raw SQL: UNIQUE NULLS NOT DISTINCT (user_id, platform_id, feature_id)
+  @@index([userId])
+  @@map("user_capability_overrides")
+}
+
+model KillSwitch {
+  id              String    @id @default(uuid()) @db.Uuid
+  /// platform only = whole platform; feature only = feature everywhere; both = that pair
+  platformId      String?   @map("platform_id") @db.Uuid
+  featureId       String?   @map("feature_id") @db.Uuid
+  active          Boolean   @default(true)
+  pauseQueuedJobs Boolean   @default(true) @map("pause_queued_jobs")
+  reason          String
+  activatedById   String?   @map("activated_by_id") @db.Uuid
+  activatedAt     DateTime  @default(now()) @map("activated_at")
+  deactivatedAt   DateTime? @map("deactivated_at")
+
+  platform    Platform? @relation(fields: [platformId], references: [id], onDelete: Cascade)
+  feature     Feature?  @relation(fields: [featureId], references: [id], onDelete: Cascade)
+  activatedBy User?     @relation(fields: [activatedById], references: [id], onDelete: SetNull)
+
+  // CHECK (platform_id IS NOT NULL OR feature_id IS NOT NULL) in raw SQL
+  @@index([active])
+  @@map("kill_switches")
+}
+
+model AppSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("app_settings")
+}
+
+// ───────────────────── Connections & Destinations ─────────────────────
+
+model OAuthState {
+  id            String       @id @default(uuid()) @db.Uuid
+  state         String       @unique
+  userId        String       @map("user_id") @db.Uuid
+  provider      ProviderKind
+  codeVerifier  String?      @map("code_verifier")
+  platformCodes String[]     @map("platform_codes")
+  expiresAt     DateTime     @map("expires_at")
+  consumedAt    DateTime?    @map("consumed_at")
+  createdAt     DateTime     @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("oauth_states")
+}
+
+model ProviderConnection {
+  id                   String           @id @default(uuid()) @db.Uuid
+  userId               String           @map("user_id") @db.Uuid
+  provider             ProviderKind
+  externalUserId       String           @map("external_user_id")
+  externalUserName     String?          @map("external_user_name")
+  scopes               String[]
+  accessTokenEnc       Bytes?           @map("access_token_enc")
+  refreshTokenEnc      Bytes?           @map("refresh_token_enc")
+  tokenKeyVersion      Int?             @map("token_key_version")
+  accessTokenExpiresAt DateTime?        @map("access_token_expires_at")
+  status               ConnectionStatus @default(CONNECTED)
+  lastRefreshedAt      DateTime?        @map("last_refreshed_at")
+  lastValidatedAt      DateTime?        @map("last_validated_at")
+  lastError            String?          @map("last_error")
+  metadata             Json             @default("{}")
+  createdAt            DateTime         @default(now()) @map("created_at")
+  updatedAt            DateTime         @updatedAt @map("updated_at")
+
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  socialAccounts SocialAccount[]
+
+  @@unique([userId, provider, externalUserId])
+  @@map("provider_connections")
+}
+
+model SocialAccount {
+  id                  String              @id @default(uuid()) @db.Uuid
+  userId              String              @map("user_id") @db.Uuid
+  platformId          String              @map("platform_id") @db.Uuid
+  connectionId        String              @map("connection_id") @db.Uuid
+  externalAccountId   String              @map("external_account_id")
+  displayName         String              @map("display_name")
+  handle              String?
+  avatarUrl           String?             @map("avatar_url")
+  /// e.g. Facebook Page access token; null when the connection token is used
+  destinationTokenEnc Bytes?              @map("destination_token_enc")
+  tokenKeyVersion     Int?                @map("token_key_version")
+  status              SocialAccountStatus @default(INACTIVE)
+  statusReason        String?             @map("status_reason")
+  metadata            Json                @default("{}")
+  connectedAt         DateTime            @default(now()) @map("connected_at")
+  lastMetricsSyncedAt DateTime?           @map("last_metrics_synced_at")
+  updatedAt           DateTime            @updatedAt @map("updated_at")
+
+  user         User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  platform     Platform              @relation(fields: [platformId], references: [id])
+  connection   ProviderConnection    @relation(fields: [connectionId], references: [id])
+  publications Publication[]
+  metricPoints AccountMetricPoint[]
+  rawResponses ProviderRawResponse[]
+
+  @@unique([userId, platformId, externalAccountId])
+  @@map("social_accounts")
+}
+
+// ───────────────────────────── Media ─────────────────────────────
+
+model Media {
+  id                  String      @id @default(uuid()) @db.Uuid
+  userId              String      @map("user_id") @db.Uuid
+  storageKey          String      @unique @map("storage_key")
+  multipartUploadId   String?     @map("multipart_upload_id")
+  originalFilename    String?     @map("original_filename")
+  declaredMimeType    String      @map("declared_mime_type")
+  declaredSizeBytes   BigInt      @map("declared_size_bytes")
+  sizeBytes           BigInt?     @map("size_bytes")
+  status              MediaStatus @default(PENDING_UPLOAD)
+  invalidReason       String?     @map("invalid_reason")
+  container           String?
+  videoCodec          String?     @map("video_codec")
+  audioCodec          String?     @map("audio_codec")
+  width               Int?
+  height              Int?
+  rotation            Int?
+  durationMs          Int?        @map("duration_ms")
+  frameRate           Float?      @map("frame_rate")
+  isVariableFrameRate Boolean?    @map("is_variable_frame_rate")
+  isHdr               Boolean?    @map("is_hdr")
+  bitDepth            Int?        @map("bit_depth")
+  hasAudio            Boolean?    @map("has_audio")
+  probe               Json?
+  createdAt           DateTime    @default(now()) @map("created_at")
+  uploadedAt          DateTime?   @map("uploaded_at")
+  deleteAfter         DateTime?   @map("delete_after")
+  deletedAt           DateTime?   @map("deleted_at")
+
+  user     User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  variants MediaVariant[]
+  posts    Post[]
+
+  @@index([status, deleteAfter])
+  @@map("media")
+}
+
+model MediaVariant {
+  id         String           @id @default(uuid()) @db.Uuid
+  mediaId    String           @map("media_id") @db.Uuid
+  kind       MediaVariantKind
+  storageKey String           @unique @map("storage_key")
+  status     VariantStatus    @default(PROCESSING)
+  sizeBytes  BigInt?          @map("size_bytes")
+  probe      Json?
+  error      String?
+  createdAt  DateTime         @default(now()) @map("created_at")
+  readyAt    DateTime?        @map("ready_at")
+
+  media        Media         @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+  publications Publication[]
+
+  @@unique([mediaId, kind])
+  @@map("media_variants")
+}
+
+// ─────────────────────── Posts & Publishing ───────────────────────
+
+model Post {
+  id             String     @id @default(uuid()) @db.Uuid
+  userId         String     @map("user_id") @db.Uuid
+  mediaId        String     @map("media_id") @db.Uuid
+  title          String?
+  caption        String?
+  status         PostStatus @default(PUBLISHING)
+  scheduledAt    DateTime?  @map("scheduled_at")
+  idempotencyKey String     @map("idempotency_key")
+  requestHash    String     @map("request_hash")
+  notifiedAt     DateTime?  @map("notified_at")
+  createdAt      DateTime   @default(now()) @map("created_at")
+  updatedAt      DateTime   @updatedAt @map("updated_at")
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  media        Media         @relation(fields: [mediaId], references: [id])
+  publications Publication[]
+
+  @@unique([userId, idempotencyKey])
+  @@index([userId, createdAt])
+  @@map("posts")
+}
+
+model Publication {
+  id                  String            @id @default(uuid()) @db.Uuid
+  postId              String            @map("post_id") @db.Uuid
+  socialAccountId     String            @map("social_account_id") @db.Uuid
+  platformId          String            @map("platform_id") @db.Uuid
+  mediaVariantId      String?           @map("media_variant_id") @db.Uuid
+  status              PublicationStatus @default(QUEUED)
+  titleOverride       String?           @map("title_override")
+  captionOverride     String?           @map("caption_override")
+  options             Json              @default("{}")
+  currentStep         String?           @map("current_step")
+  /// provider IDs, upload session URIs, byte offsets, inFlight marker
+  checkpoint          Json              @default("{}")
+  attemptCount        Int               @default(0) @map("attempt_count")
+  nextAttemptAt       DateTime?         @map("next_attempt_at")
+  waitingSince        DateTime?         @map("waiting_since")
+  externalId          String?           @map("external_id")
+  externalUrl         String?           @map("external_url")
+  errorCategory       ErrorCategory?    @map("error_category")
+  errorCode           String?           @map("error_code")
+  providerErrorCode   String?           @map("provider_error_code")
+  errorMessage        String?           @map("error_message")
+  resolvedManually    Boolean           @default(false) @map("resolved_manually")
+  queuedAt            DateTime          @default(now()) @map("queued_at")
+  startedAt           DateTime?         @map("started_at")
+  publishedAt         DateTime?         @map("published_at")
+  lastCheckedAt       DateTime?         @map("last_checked_at")
+  lastMetricsSyncedAt DateTime?         @map("last_metrics_synced_at")
+  version             Int               @default(0)
+  createdAt           DateTime          @default(now()) @map("created_at")
+  updatedAt           DateTime          @updatedAt @map("updated_at")
+
+  post          Post                     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  socialAccount SocialAccount            @relation(fields: [socialAccountId], references: [id])
+  platform      Platform                 @relation(fields: [platformId], references: [id])
+  mediaVariant  MediaVariant?            @relation(fields: [mediaVariantId], references: [id])
+  attempts      PublicationAttempt[]
+  metricPoints  PublicationMetricPoint[]
+  rawResponses  ProviderRawResponse[]
+
+  @@unique([postId, socialAccountId])
+  @@index([status, nextAttemptAt])
+  @@index([socialAccountId, publishedAt])
+  @@map("publications")
+}
+
+model PublicationAttempt {
+  id                String          @id @default(uuid()) @db.Uuid
+  publicationId     String          @map("publication_id") @db.Uuid
+  attemptNumber     Int             @map("attempt_number")
+  jobId             String?         @map("job_id")
+  step              String
+  outcome           AttemptOutcome?
+  errorCategory     ErrorCategory?  @map("error_category")
+  httpStatus        Int?            @map("http_status")
+  providerErrorCode String?         @map("provider_error_code")
+  errorMessage      String?         @map("error_message")
+  startedAt         DateTime        @default(now()) @map("started_at")
+  finishedAt        DateTime?       @map("finished_at")
+
+  publication Publication @relation(fields: [publicationId], references: [id], onDelete: Cascade)
+
+  @@index([publicationId, startedAt])
+  @@map("publication_attempts")
+}
+
+// ─────────────────────────── Analytics ───────────────────────────
+
+model MetricDefinition {
+  /// e.g. "youtube.account.subscribers_gained"
+  key             String            @id
+  /// null for derived cross-platform metrics
+  platformId      String?           @map("platform_id") @db.Uuid
+  entity          MetricEntity
+  granularity     MetricGranularity
+  displayName     String            @map("display_name")
+  description     String?
+  unit            String            @default("count")
+  aggregation     MetricAggregation
+  providerMetric  String?           @map("provider_metric")
+  comparableGroup String?           @map("comparable_group")
+  isDerived       Boolean           @default(false) @map("is_derived")
+  enabled         Boolean           @default(true)
+  deprecatedAt    DateTime?         @map("deprecated_at")
+
+  platform          Platform?                @relation(fields: [platformId], references: [id])
+  accountPoints     AccountMetricPoint[]
+  publicationPoints PublicationMetricPoint[]
+
+  @@map("metric_definitions")
+}
+
+model AccountMetricPoint {
+  id              BigInt   @id @default(autoincrement())
+  socialAccountId String   @map("social_account_id") @db.Uuid
+  metricKey       String   @map("metric_key")
+  /// DAILY: "2026-09-14" (provider reporting date); SNAPSHOT: "2026-09-14T15" (UTC hour)
+  bucketKey       String   @map("bucket_key")
+  bucketStart     DateTime @map("bucket_start")
+  value           Decimal  @db.Decimal(20, 4)
+  capturedAt      DateTime @default(now()) @map("captured_at")
+
+  socialAccount SocialAccount    @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+  metric        MetricDefinition @relation(fields: [metricKey], references: [key])
+
+  @@unique([socialAccountId, metricKey, bucketKey])
+  @@index([socialAccountId, metricKey, bucketStart])
+  @@map("account_metric_points")
+}
+
+model PublicationMetricPoint {
+  id            BigInt   @id @default(autoincrement())
+  publicationId String   @map("publication_id") @db.Uuid
+  metricKey     String   @map("metric_key")
+  bucketKey     String   @map("bucket_key")
+  bucketStart   DateTime @map("bucket_start")
+  value         Decimal  @db.Decimal(20, 4)
+  capturedAt    DateTime @default(now()) @map("captured_at")
+
+  publication Publication      @relation(fields: [publicationId], references: [id], onDelete: Cascade)
+  metric      MetricDefinition @relation(fields: [metricKey], references: [key])
+
+  @@unique([publicationId, metricKey, bucketKey])
+  @@index([publicationId, metricKey, bucketStart])
+  @@map("publication_metric_points")
+}
+
+model ProviderRawResponse {
+  id              BigInt   @id @default(autoincrement())
+  socialAccountId String?  @map("social_account_id") @db.Uuid
+  publicationId   String?  @map("publication_id") @db.Uuid
+  kind            String
+  payload         Json
+  capturedAt      DateTime @default(now()) @map("captured_at")
+
+  socialAccount SocialAccount? @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+  publication   Publication?   @relation(fields: [publicationId], references: [id], onDelete: Cascade)
+
+  @@index([capturedAt])
+  @@map("provider_raw_responses")
+}
+
+model ProviderQuotaUsage {
+  id         String       @id @default(uuid()) @db.Uuid
+  provider   ProviderKind
+  quotaName  String       @map("quota_name")
+  /// quota day in the provider's reset timezone
+  day        DateTime     @db.Date
+  unitsUsed  Int          @default(0) @map("units_used")
+  unitsLimit Int?         @map("units_limit")
+  updatedAt  DateTime     @updatedAt @map("updated_at")
+
+  @@unique([provider, quotaName, day])
+  @@map("provider_quota_usage")
+}
+
+model SyncRun {
+  id              String    @id @default(uuid()) @db.Uuid
+  kind            String
+  socialAccountId String?   @map("social_account_id") @db.Uuid
+  status          String
+  itemsProcessed  Int       @default(0) @map("items_processed")
+  error           String?
+  startedAt       DateTime  @default(now()) @map("started_at")
+  finishedAt      DateTime? @map("finished_at")
+
+  @@index([kind, startedAt])
+  @@map("sync_runs")
+}
+
+// ───────────────────────────── Audit ─────────────────────────────
+
+model AuditLog {
+  id          BigInt   @id @default(autoincrement())
+  actorUserId String?  @map("actor_user_id") @db.Uuid
+  action      String
+  entityType  String   @map("entity_type")
+  entityId    String?  @map("entity_id")
+  oldValue    Json?    @map("old_value")
+  newValue    Json?    @map("new_value")
+  reason      String?
+  ipAddress   String?  @map("ip_address")
+  requestId   String?  @map("request_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  actor User? @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}

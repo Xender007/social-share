@@ -1,0 +1,50 @@
+# Docker build context excludes (repo root). Keep this generous but careful:
+# apps/api/Dockerfile explicitly COPYs only the package.json files + source
+# directories it needs, so excluding apps/mobile's heavy native/build output
+# here is safe as long as apps/mobile/package.json itself stays reachable
+# (it is — only its subdirectories are excluded below, not the whole folder).
+
+node_modules
+**/node_modules
+.pnpm-store
+
+.git
+.turbo
+**/dist
+**/coverage
+**/*.tsbuildinfo
+**/.expo
+
+# Prisma client is generated inside the Docker build itself.
+apps/api/src/generated
+
+# Mobile native/build artifacts — never needed to build @sp/api.
+apps/mobile/android
+apps/mobile/ios
+apps/mobile/.expo
+apps/mobile/builds
+apps/mobile/expo-env.d.ts
+*.apk
+*.aab
+
+# Local dev data / infra (D:\dev, embedded Postgres, SeaweedFS) never lives
+# in the repo tree, but exclude the usual local-data markers defensively.
+.data
+*.log
+
+# Secrets — never bake real env values into an image layer.
+# Bare patterns only match at the context root in Docker's ignore matching
+# (unlike gitignore), so nested .env files (e.g. apps/api/.env) need an
+# explicit **/ prefix or they slip through into the build context.
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
+
+# Docs/design assets irrelevant to the API build.
+docs
+design-system
+social_publishing_app_blueprint_v2.md
+README.md

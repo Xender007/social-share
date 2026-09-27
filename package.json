@@ -1,0 +1,32 @@
+{
+  "name": "social-publisher",
+  "private": true,
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "infra": "node scripts/dev-infra.mjs",
+    "dev:api": "pnpm --filter @sp/api dev",
+    "dev:mobile": "pnpm --filter @sp/mobile start",
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "emulator": "node scripts/emulator.mjs",
+    "android:build": "node scripts/android-build.mjs",
+    "android-build-release": "node scripts/android-build-release.mjs",
+    "mirror": "node scripts/mirror.mjs"
+  },
+  "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
+    "embedded-postgres": "18.4.0-beta.17",
+    "qrcode": "^1.5.4",
+    "turbo": "^2.10.13",
+    "typescript": "~6.0.3"
+  },
+  "pnpm": {
+    "patchedDependencies": {
+      "expo-share-intent": "patches/expo-share-intent.patch"
+    }
+  }
+}

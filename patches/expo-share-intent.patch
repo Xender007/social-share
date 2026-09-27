@@ -1,0 +1,82 @@
+diff --git a/android/src/main/java/expo/modules/shareintent/ExpoShareIntentModule.kt b/android/src/main/java/expo/modules/shareintent/ExpoShareIntentModule.kt
+index ff5b1001e7bb3443482727cec48c22579465c73b..7b4c543873ae36d4ab1e42792b38b78069f1b424 100644
+--- a/android/src/main/java/expo/modules/shareintent/ExpoShareIntentModule.kt
++++ b/android/src/main/java/expo/modules/shareintent/ExpoShareIntentModule.kt
+@@ -66,37 +66,53 @@ class ExpoShareIntentModule : Module() {
+                     "filePath" to instance?.getAbsolutePath(uri),
+                 )
+             }
+-            val queryResult: Cursor = resolver.query(uri, null, null, null, null)!!
+-            queryResult.moveToFirst()
+-            val fileName = queryResult.getString(queryResult.getColumnIndex(OpenableColumns.DISPLAY_NAME))
+-            val fileSize = queryResult.getString(queryResult.getColumnIndex(OpenableColumns.SIZE))
+-            queryResult.close()
++            // Patched (social-publisher): a provider can return no row or throw (deleted file, missing or
++            // revoked permission). The original code crashed the whole app; report an error instead.
++            var fileName: String? = null
++            var fileSize: String? = null
++            try {
++                resolver.query(uri, null, null, null, null)?.use { cursor ->
++                    if (cursor.moveToFirst()) {
++                        val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
++                        val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
++                        if (nameIndex >= 0) fileName = cursor.getString(nameIndex)
++                        if (sizeIndex >= 0) fileSize = cursor.getString(sizeIndex)
++                    }
++                }
++            } catch (e: Exception) {
++                notifyError("Cannot read shared file info: " + e.message)
++            }
+ 
+-            val mimeType = resolver.getType(uri)!!
++            val mimeType = try { resolver.getType(uri) } catch (e: Exception) { null } ?: "application/octet-stream"
+ 
+             var mediaWidth: String? = null;
+             var mediaHeight: String? = null;
+             var mediaDuration: String? = null;
+-            if (mimeType.startsWith("image/")) {
+-                val options = BitmapFactory.Options().apply {
+-                    inJustDecodeBounds = true
++            try {
++                if (mimeType.startsWith("image/")) {
++                    val options = BitmapFactory.Options().apply {
++                        inJustDecodeBounds = true
++                    }
++                    BitmapFactory.decodeStream(resolver.openInputStream(uri), null, options)
++                    mediaHeight = options.outHeight.toString()
++                    mediaWidth = options.outWidth.toString()
+                 }
+-                BitmapFactory.decodeStream(resolver.openInputStream(uri), null, options)
+-                mediaHeight = options.outHeight.toString()
+-                mediaWidth = options.outWidth.toString()
+-            }
+-            if (mimeType.startsWith("video/")) {
+-                val retriever = MediaMetadataRetriever()
+-                retriever.setDataSource(instance?.getAbsolutePath(uri))
+-                mediaWidth = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toInt().toString() ?: null
+-                mediaHeight = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toInt().toString() ?: null
+-                // Check orientation and flip size if required
+-                val metaRotation = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toInt() ?: 0;
+-                if (metaRotation == 90 || metaRotation == 270) {
+-                    mediaWidth = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toInt().toString() ?: null
+-                    mediaHeight = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toInt().toString() ?: null
++                if (mimeType.startsWith("video/")) {
++                    val retriever = MediaMetadataRetriever()
++                    retriever.setDataSource(instance?.getAbsolutePath(uri))
++                    mediaWidth = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toInt().toString() ?: null
++                    mediaHeight = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toInt().toString() ?: null
++                    // Check orientation and flip size if required
++                    val metaRotation = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toInt() ?: 0;
++                    if (metaRotation == 90 || metaRotation == 270) {
++                        mediaWidth = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toInt().toString() ?: null
++                        mediaHeight = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toInt().toString() ?: null
++                    }
++                    mediaDuration = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toInt().toString() ?: null
++                    retriever.release()
+                 }
+-                mediaDuration = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toInt().toString() ?: null
++            } catch (e: Exception) {
++                notifyError("Cannot read shared media details: " + e.message)
+             }
+ 
+             return mapOf(

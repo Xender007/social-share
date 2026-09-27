@@ -1,0 +1,9 @@
+{
+  // The project path contains an apostrophe, which breaks native Android/Gradle tooling
+  // (see CLAUDE.md "Environment gotchas"). Native builds already work around this by building
+  // from a clean mirror at D:\dev\sp-native (scripts/android-build.mjs / android-build-release.mjs).
+  // VS Code's own "Gradle for Java" extension has no such workaround and fails trying to index
+  // apps/mobile/android in place, showing a harmless but noisy "Gradle: Build Error" status.
+  // Turning off its auto-detection stops that; it doesn't affect real builds at all.
+  "gradle.autoDetect": "off"
+}
