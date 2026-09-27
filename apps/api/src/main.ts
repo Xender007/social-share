@@ -24,6 +24,9 @@ async function bootstrap(): Promise<void> {
     exclude: [
       { path: 'health', method: RequestMethod.GET },
       { path: 'health/ready', method: RequestMethod.GET },
+      { path: '/', method: RequestMethod.GET },
+      { path: 'privacy', method: RequestMethod.GET },
+      { path: 'data-deletion', method: RequestMethod.GET },
       { path: 'dev/oauth/:provider', method: RequestMethod.GET },
       { path: 'dev/fake-posts/:platform/:externalId', method: RequestMethod.GET },
     ],

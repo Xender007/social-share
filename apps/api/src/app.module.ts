@@ -20,6 +20,7 @@ import { CapabilityGuard, EntitlementsModule } from './entitlements/entitlements
 import { HealthController } from './health/health.controller';
 import { JobsModule } from './jobs/job-queue.service';
 import { KillSwitchModule } from './kill-switches/kill-switch.service';
+import { LegalController } from './legal/legal.controller';
 import { MediaProcessingService } from './media-processing/media-processing.service';
 import { MediaController } from './media/media.controller';
 import { MediaService } from './media/media.service';
@@ -40,6 +41,7 @@ import { WorkerService } from './worker/worker.service';
   imports: [ConfigModule, PrismaModule, CryptoModule, AuditModule, SettingsModule, StorageModule, JobsModule, EntitlementsModule, KillSwitchModule, AuthModule],
   controllers: [
     HealthController,
+    LegalController,
     CapabilitiesController,
     ConnectionsController,
     DevController,
